@@ -7,7 +7,7 @@ import pandas as pd
 import xarray as xr
 
 from .aggregations import Aggregation, _atleast_1d
-from .core import factorize_, groupby_reduce, rechunk_array, reindex_
+from .core import factorize_, groupby_reduce, rechunk_for_blockwise, reindex_
 
 if TYPE_CHECKING:
     from xarray import DataArray, Dataset, GroupBy, Resample
@@ -334,14 +334,14 @@ def rechunk_to_group_boundaries(obj: Union["DataArray", "Dataset"], dim: str, la
         for var in obj:
             if obj[var].chunks is not None:
                 obj[var] = obj[var].copy(
-                    data=rechunk_array(
+                    data=rechunk_for_blockwise(
                         obj[var].data, axis=obj[var].get_axis_num(dim), labels=labels.data
                     )
                 )
     else:
         if obj.chunks is not None:
             obj = obj.copy(
-                data=rechunk_array(obj.data, axis=obj.get_axis_num(dim), labels=labels.data)
+                data=rechunk_for_blockwise(obj.data, axis=obj.get_axis_num(dim), labels=labels.data)
             )
 
     return obj

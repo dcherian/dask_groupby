@@ -14,5 +14,6 @@ dependencies:
   - pre-commit
   - numpy_groupies
   - pooch
+  - toolz
   - pip:
     - icecream
