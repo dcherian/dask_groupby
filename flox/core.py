@@ -113,6 +113,12 @@ FactorProps = namedtuple("FactorProps", "offset_group nan_sentinel nanmask")
 # _simple_combine.
 DUMMY_AXIS = -2
 
+# Thresholds below which we will automatically rechunk to blockwise if it makes sense
+# 1. Fractional change in number of chunks after rechunking
+BLOCKWISE_RECHUNK_NUM_CHUNKS_THRESHOLD = 0.25
+# 2. Fractional change in max chunk size after rechunking
+BLOCKWISE_RECHUNK_CHUNK_SIZE_THRESHOLD = 0.15
+
 logger = logging.getLogger("flox")
 
 
@@ -230,6 +236,8 @@ def _get_optimal_chunks_for_groups(chunks, labels):
         Δl = abs(c - l)
         if c == 0 or newchunkidx[-1] > l:
             continue
+        f = f.item()  # noqa
+        l = l.item()  # noqa
         if Δf < Δl and f > newchunkidx[-1]:
             newchunkidx.append(f)
         else:
@@ -651,12 +659,20 @@ def rechunk_for_blockwise(array: DaskArray, axis: T_Axis, labels: np.ndarray) ->
     DaskArray
         Rechunked array
     """
-    labels = factorize_((labels,), axes=())[0]
     chunks = array.chunks[axis]
+    if len(chunks) == 1:
+        return array
+
+    labels = factorize_((labels,), axes=())[0]
     newchunks = _get_optimal_chunks_for_groups(chunks, labels)
     if newchunks == chunks:
         return array
-    else:
+
+    Δn = abs(len(newchunks) - len(chunks))
+    if (Δn / len(chunks) < BLOCKWISE_RECHUNK_NUM_CHUNKS_THRESHOLD) and (
+        abs(max(newchunks) - max(chunks)) / max(chunks) < BLOCKWISE_RECHUNK_CHUNK_SIZE_THRESHOLD
+    ):
+        # Less than 25% change in number of chunks, let's do it
         return array.rechunk({axis: newchunks})
 
 
@@ -2467,6 +2483,11 @@ def groupby_reduce(
 
     has_dask = is_duck_dask_array(array) or is_duck_dask_array(by_)
     has_cubed = is_duck_cubed_array(array) or is_duck_cubed_array(by_)
+
+    if method is None and not any_by_dask and by_.ndim == 1 and _issorted(by_):
+        # Let's try rechunking for sorted 1D by.
+        (single_axis,) = axis_
+        array = rechunk_for_blockwise(array, single_axis, by_)
 
     if _is_first_last_reduction(func):
         if has_dask and nax != 1:
