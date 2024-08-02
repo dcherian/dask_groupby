@@ -157,8 +157,11 @@ def identity(x: T) -> T:
     return x
 
 
-def _issorted(arr: np.ndarray) -> bool:
-    return bool((arr[:-1] <= arr[1:]).all())
+def _issorted(arr: np.ndarray, ascending=True) -> bool:
+    if ascending:
+        return bool((arr[:-1] <= arr[1:]).all())
+    else:
+        return bool((arr[:-1] >= arr[1:]).all())
 
 
 def _is_arg_reduction(func: T_Agg) -> bool:
@@ -2484,7 +2487,13 @@ def groupby_reduce(
     has_dask = is_duck_dask_array(array) or is_duck_dask_array(by_)
     has_cubed = is_duck_cubed_array(array) or is_duck_cubed_array(by_)
 
-    if method is None and not any_by_dask and by_.ndim == 1 and _issorted(by_):
+    if (
+        method is None
+        and is_duck_dask_array(array)
+        and not any_by_dask
+        and by_.ndim == 1
+        and _issorted(by_, ascending=True)
+    ):
         # Let's try rechunking for sorted 1D by.
         (single_axis,) = axis_
         array = rechunk_for_blockwise(array, single_axis, by_)
