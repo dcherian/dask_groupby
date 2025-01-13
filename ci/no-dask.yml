@@ -21,5 +21,4 @@ dependencies:
   - toolz
   - numba
   - numbagg>=0.3
-  - pip:
-      - git+https://github.com/dcherian/xarray.git
+  - xarray

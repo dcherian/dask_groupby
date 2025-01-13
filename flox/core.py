@@ -1931,7 +1931,7 @@ def cubed_groupby_agg(
                 out[field] = combine(a[field], axis=dummy_axis, keepdims=keepdims)
             return out
 
-        def _groupby_aggregate(a):
+        def _groupby_aggregate(a, **kwargs):
             # Convert cubed dict to one that _finalize_results works with
             results = {"groups": expected_groups, "intermediates": a.values()}
             out = _finalize_results(results, agg, axis, expected_groups, reindex)

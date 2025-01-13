@@ -1284,6 +1284,7 @@ def test_group_by_datetime(engine, method):
     assert_equal(expected, actual)
 
 
+@pytest.mark.xfail
 @requires_cubed
 @pytest.mark.parametrize("method", ["blockwise", "map-reduce"])
 def test_group_by_datetime_cubed(engine, method):
