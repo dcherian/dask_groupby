@@ -376,3 +376,26 @@ def nanlast(values, axis, keepdims=False):
         return np.expand_dims(result, axis=axis)
     else:
         return result
+
+
+def topk(a, k, axis, keepdims):
+    """Chunk and combine function of topk
+
+    Extract the k largest elements from a on the given axis.
+    If k is negative, extract the -k smallest elements instead.
+    Note that, unlike in the parent function, the returned elements
+    are not sorted internally.
+
+    NOTE: This function was copied from the dask project under the terms
+    of their LICENSE.
+    """
+    assert keepdims is True
+    (axis,) = axis
+    axis = normalize_axis_index(axis, a.ndim)
+    if abs(k) >= a.shape[axis]:
+        return a
+
+    a.partition(-k, axis=axis)
+    k_slice = slice(-k, None) if k > 0 else slice(-k)
+    result = a[tuple(k_slice if i == axis else slice(None) for i in range(a.ndim))]
+    return result.astype(a.dtype, copy=False)

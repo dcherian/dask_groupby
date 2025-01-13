@@ -9,7 +9,13 @@ import xarray as xr
 from packaging.version import Version
 from xarray.core.duck_array_ops import _datetime_nanmin
 
-from .aggregations import Aggregation, Dim, _atleast_1d, quantile_new_dims_func
+from .aggregations import (
+    Aggregation,
+    Dim,
+    _atleast_1d,
+    quantile_new_dims_func,
+    topk_new_dims_func,
+)
 from .core import (
     _convert_expected_groups_to_index,
     _get_expected_groups,
@@ -92,7 +98,7 @@ def xarray_reduce(
         Variables with which to group by ``obj``
     func : {"all", "any", "count", "sum", "nansum", "mean", "nanmean", \
             "max", "nanmax", "min", "nanmin", "argmax", "nanargmax", "argmin", "nanargmin", \
-            "quantile", "nanquantile", "median", "nanmedian", "mode", "nanmode", \
+            "quantile", "nanquantile", "median", "nanmedian", "topk", "mode", "nanmode", \
             "first", "nanfirst", "last", "nanlast"} or Aggregation
         Single function name or an Aggregation instance
     expected_groups : str or sequence
@@ -384,17 +390,20 @@ def xarray_reduce(
 
         result, *groups = groupby_reduce(array, *by, func=func, **kwargs)
 
-        # Transpose the new quantile dimension to the end. This is ugly.
+        # Transpose the new quantile or topk dimension to the end. This is ugly.
         # but new core dimensions are expected at the end :/
         # but groupby_reduce inserts them at the beginning
         if func in ["quantile", "nanquantile"]:
             (newdim,) = quantile_new_dims_func(**finalize_kwargs)
-            if not newdim.is_scalar:
-                # NOTE: _restore_dim_order will move any new dims to the end anyway.
-                # This transpose is simply makes it easy to specify output_core_dims
-                # output dim order: (*broadcast_dims, *group_dims, quantile_dim)
-                result = np.moveaxis(result, 0, -1)
-
+        elif func == "topk":
+            (newdim,) = topk_new_dims_func(**finalize_kwargs)
+        else:
+            newdim = None
+        if newdim is not None and not newdim.is_scalar:
+            # NOTE: _restore_dim_order will move any new dims to the end anyway.
+            # This transpose is simply makes it easy to specify output_core_dims
+            # output dim order: (*broadcast_dims, *group_dims, quantile_dim)
+            result = np.moveaxis(result, 0, -1)
         # Output of count has an int dtype.
         if requires_numeric and func != "count":
             if is_npdatetime:
