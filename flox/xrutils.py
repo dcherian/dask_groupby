@@ -213,8 +213,6 @@ def datetime_to_numeric(array, offset=None, datetime_unit=None, dtype=float):
     """
     # TODO: make this function dask-compatible?
     # Set offset to minimum if not given
-    from xarray.core.duck_array_ops import _datetime_nanmin
-
     if offset is None:
         if array.dtype.kind in "Mm":
             offset = _datetime_nanmin(array)
@@ -343,6 +341,28 @@ def _contains_cftime_datetimes(array) -> bool:
             return isinstance(sample, cftime.datetime)
         else:
             return False
+
+
+def _datetime_nanmin(array):
+    """nanmin() function for datetime64.
+
+    Caveats that this function deals with:
+
+    - In numpy < 1.18, min() on datetime64 incorrectly ignores NaT
+    - numpy nanmin() don't work on datetime64 (all versions at the moment of writing)
+    - dask min() does not work on datetime64 (all versions at the moment of writing)
+    """
+    from .xrdtypes import is_datetime_like
+
+    dtype = array.dtype
+    assert is_datetime_like(dtype)
+    # (NaT).astype(float) does not produce NaN...
+    array = np.where(pd.isnull(array), np.nan, array.astype(float))
+    array = np.nanmin(array)
+    if isinstance(array, float):
+        array = np.array(array)
+    # ...but (NaN).astype("M8") does produce NaT
+    return array.astype(dtype)
 
 
 def _select_along_axis(values, idx, axis):

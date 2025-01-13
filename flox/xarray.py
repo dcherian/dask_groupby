@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from packaging.version import Version
-from xarray.core.duck_array_ops import _datetime_nanmin
 
 from .aggregations import Aggregation, Dim, _atleast_1d, quantile_new_dims_func
 from .core import (
@@ -18,7 +17,6 @@ from .core import (
 )
 from .core import rechunk_for_blockwise as rechunk_array_for_blockwise
 from .core import rechunk_for_cohorts as rechunk_array_for_cohorts
-from .xrutils import _contains_cftime_datetimes, _to_pytimedelta, datetime_to_numeric
 
 if TYPE_CHECKING:
     from xarray.core.types import T_DataArray, T_Dataset
@@ -366,22 +364,6 @@ def xarray_reduce(
             if "nan" not in func and func not in ["all", "any", "count"]:
                 func = f"nan{func}"
 
-        # Flox's count works with non-numeric and its faster than converting.
-        requires_numeric = func not in ["count", "any", "all"] or (
-            func == "count" and kwargs["engine"] != "flox"
-        )
-        if requires_numeric:
-            is_npdatetime = array.dtype.kind in "Mm"
-            is_cftime = _contains_cftime_datetimes(array)
-            if is_npdatetime:
-                offset = _datetime_nanmin(array)
-                # xarray always uses np.datetime64[ns] for np.datetime64 data
-                dtype = "timedelta64[ns]"
-                array = datetime_to_numeric(array, offset)
-            elif is_cftime:
-                offset = array.min()
-                array = datetime_to_numeric(array, offset, datetime_unit="us")
-
         result, *groups = groupby_reduce(array, *by, func=func, **kwargs)
 
         # Transpose the new quantile dimension to the end. This is ugly.
@@ -394,13 +376,6 @@ def xarray_reduce(
                 # This transpose is simply makes it easy to specify output_core_dims
                 # output dim order: (*broadcast_dims, *group_dims, quantile_dim)
                 result = np.moveaxis(result, 0, -1)
-
-        # Output of count has an int dtype.
-        if requires_numeric and func != "count":
-            if is_npdatetime:
-                return result.astype(dtype) + offset
-            elif is_cftime:
-                return _to_pytimedelta(result, unit="us") + offset
 
         return result
 

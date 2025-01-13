@@ -2007,3 +2007,32 @@ def test_blockwise_avoid_rechunk():
     actual, groups = groupby_reduce(array, by, func="first")
     assert_equal(groups, ["", "0", "1"])
     assert_equal(actual, np.array([0, 0, 0], dtype=np.int64))
+
+
+def test_datetime_minmax(engine):
+    # GH403
+    array = np.array([np.datetime64("2000-01-01"), np.datetime64("2000-01-02"), np.datetime64("2000-01-03")])
+    by = np.array([0, 0, 1])
+    actual, _ = flox.groupby_reduce(array, by, func="nanmin", engine=engine)
+    expected = array[[0, 2]]
+    assert_equal(expected, actual)
+
+    expected = array[[1, 2]]
+    actual, _ = flox.groupby_reduce(array, by, func="nanmax", engine=engine)
+    assert_equal(expected, actual)
+
+
+@pytest.mark.parametrize("func", ["first", "last", "nanfirst", "nanlast"])
+def test_datetime_timedelta_first_last(engine, func):
+    import flox
+
+    idx = 0 if "first" in func else -1
+
+    dt = pd.date_range("2001-01-01", freq="d", periods=5).values
+    by = np.ones(dt.shape, dtype=int)
+    actual, _ = flox.groupby_reduce(dt, by, func=func, engine=engine)
+    assert_equal(actual, dt[[idx]])
+
+    dt = dt - dt[0]
+    actual, _ = flox.groupby_reduce(dt, by, func=func, engine=engine)
+    assert_equal(actual, dt[[idx]])

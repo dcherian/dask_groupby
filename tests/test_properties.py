@@ -13,14 +13,14 @@ import dask
 import hypothesis.extra.numpy as npst
 import hypothesis.strategies as st
 import numpy as np
-from hypothesis import assume, given, note
+from hypothesis import assume, given, note, settings
 
 import flox
 from flox.core import groupby_reduce, groupby_scan
-from flox.xrutils import notnull
+from flox.xrutils import _contains_cftime_datetimes, _to_pytimedelta, datetime_to_numeric, isnull, notnull
 
-from . import assert_equal
-from .strategies import array_dtypes, by_arrays, chunked_arrays, func_st, numeric_arrays
+from . import BLOCKWISE_FUNCS, assert_equal
+from .strategies import all_arrays, by_arrays, chunked_arrays, func_st, numeric_dtypes, numeric_like_arrays
 from .strategies import chunks as chunks_strategy
 
 dask.config.set(scheduler="sync")
@@ -46,6 +46,8 @@ NUMPY_SCAN_FUNCS: dict[str, Callable] = {
 
 
 def not_overflowing_array(array: np.ndarray[Any, Any]) -> bool:
+    if array.dtype.kind in "Mm":
+        array = array.view(np.int64)
     if array.dtype.kind == "f":
         info = np.finfo(array.dtype)
     elif array.dtype.kind in ["i", "u"]:
@@ -64,16 +66,22 @@ def not_overflowing_array(array: np.ndarray[Any, Any]) -> bool:
 
 @given(
     data=st.data(),
-    array=st.one_of(numeric_arrays, chunked_arrays(arrays=numeric_arrays)),
+    array=st.one_of(all_arrays, chunked_arrays()),
     func=func_st,
 )
+@settings(deadline=None)
 def test_groupby_reduce(data, array, func: str) -> None:
     # overflow behaviour differs between bincount and sum (for example)
     assume(not_overflowing_array(array))
     # TODO: fix var for complex numbers upstream
     assume(not (("quantile" in func or "var" in func or "std" in func) and array.dtype.kind == "c"))
+    assume(not ("quantile" in func and array.dtype.kind == "b"))
     # arg* with nans in array are weird
-    assume("arg" not in func and not np.any(np.isnan(array).ravel()))
+    assume("arg" not in func and not np.any(isnull(array).ravel()))
+
+    # TODO: funny bugs with overflows here
+    is_cftime = _contains_cftime_datetimes(array)
+    assume(not (is_cftime and func in ["prod", "nanprod"]))
 
     axis = -1
     by = data.draw(
@@ -85,9 +93,11 @@ def test_groupby_reduce(data, array, func: str) -> None:
                 "min_size": 1,
                 "max_size": 1,
             },
-            shape=(array.shape[-1],),
+            shape=st.just((array.shape[-1],)),
         )
     )
+    if func in BLOCKWISE_FUNCS and isinstance(array, dask.array.Array):
+        array = array.rechunk({axis: -1})
     assert len(np.unique(by)) == 1
     kwargs = {"q": 0.8} if "quantile" in func else {}
     flox_kwargs: dict[str, Any] = {}
@@ -116,12 +126,21 @@ def test_groupby_reduce(data, array, func: str) -> None:
             note(f"casting array to float64, cast_to={cast_to!r}")
         else:
             cast_to = None
+
+        if array.dtype.kind in "Mm":
+            array = array.view(np.int64)
+            cast_to = array.dtype
+        elif is_cftime:
+            offset = array.min()
+            array = datetime_to_numeric(array, offset, datetime_unit="us")
         note(("kwargs:", kwargs, "cast_to:", cast_to))
         expected = getattr(np, func)(array, axis=axis, keepdims=True, **kwargs)
         if cast_to is not None:
             note(("casting to:", cast_to))
             expected = expected.astype(cast_to)
             actual = actual.astype(cast_to)
+        if is_cftime:
+            expected = _to_pytimedelta(expected, unit="us") + offset
 
     note(("expected: ", expected, "actual: ", actual))
     tolerance = {"atol": 1e-15}
@@ -130,7 +149,7 @@ def test_groupby_reduce(data, array, func: str) -> None:
 
 @given(
     data=st.data(),
-    array=chunked_arrays(arrays=numeric_arrays),
+    array=chunked_arrays(arrays=numeric_like_arrays),
     func=func_st,
 )
 def test_groupby_reduce_numpy_vs_dask(data, array, func: str) -> None:
@@ -140,12 +159,12 @@ def test_groupby_reduce_numpy_vs_dask(data, array, func: str) -> None:
     # TODO: fix var for complex numbers upstream
     assume(not (("quantile" in func or "var" in func or "std" in func) and array.dtype.kind == "c"))
     # # arg* with nans in array are weird
-    assume("arg" not in func and not np.any(np.isnan(numpy_array.ravel())))
+    assume("arg" not in func and not np.any(isnull(numpy_array.ravel())))
     if func in ["nanmedian", "nanquantile", "median", "quantile"]:
         array = array.rechunk({-1: -1})
 
     axis = -1
-    by = data.draw(by_arrays(shape=(array.shape[-1],)))
+    by = data.draw(by_arrays(shape=st.just((array.shape[-1],))))
     kwargs = {"q": 0.8} if "quantile" in func else {}
     flox_kwargs: dict[str, Any] = {}
 
@@ -161,25 +180,32 @@ def test_groupby_reduce_numpy_vs_dask(data, array, func: str) -> None:
     assert_equal(result_numpy, result_dask)
 
 
+@settings(report_multiple_bugs=False)
 @given(
     data=st.data(),
-    array=chunked_arrays(arrays=numeric_arrays),
+    array=chunked_arrays(arrays=numeric_like_arrays),
     func=st.sampled_from(tuple(NUMPY_SCAN_FUNCS)),
 )
 def test_scans(data, array: dask.array.Array, func: str) -> None:
     if "cum" in func:
         assume(not_overflowing_array(np.asarray(array)))
 
-    by = data.draw(by_arrays(shape=(array.shape[-1],)))
+    by = data.draw(by_arrays(shape=st.just((array.shape[-1],))))
     axis = array.ndim - 1
 
     # Too many float32 edge-cases!
     if "cum" in func and array.dtype.kind == "f" and array.dtype.itemsize == 4:
         assume(False)
     numpy_array = array.compute()
-    assume((np.abs(numpy_array) < 2**53).all())
+    if numpy_array.dtype.kind not in "Mm":
+        assume((np.abs(numpy_array) < 2**53).all())
 
-    dtype = NUMPY_SCAN_FUNCS[func](numpy_array[..., [0]], axis=axis).dtype
+    if numpy_array.dtype.kind in "Mm":
+        dtype = numpy_array.dtype
+        asnumeric = numpy_array.view(np.int64)
+    else:
+        asnumeric = numpy_array
+        dtype = NUMPY_SCAN_FUNCS[func](asnumeric[..., [0]], axis=axis).dtype
     expected = np.empty_like(numpy_array, dtype=dtype)
     group_idx, uniques = pd.factorize(by)
     for i in range(len(uniques)):
@@ -187,8 +213,10 @@ def test_scans(data, array: dask.array.Array, func: str) -> None:
         if not mask.any():
             note((by, group_idx, uniques))
             raise ValueError
-        expected[..., mask] = NUMPY_SCAN_FUNCS[func](numpy_array[..., mask], axis=axis, dtype=dtype)
+        expected[..., mask] = NUMPY_SCAN_FUNCS[func](asnumeric[..., mask], axis=axis)
 
+    if dtype:
+        expected = expected.astype(dtype)
     note((numpy_array, group_idx, array.chunks))
 
     tolerance = {"rtol": 1e-13, "atol": 1e-15}
@@ -201,7 +229,7 @@ def test_scans(data, array: dask.array.Array, func: str) -> None:
 
 @given(data=st.data(), array=chunked_arrays())
 def test_ffill_bfill_reverse(data, array: dask.array.Array) -> None:
-    by = data.draw(by_arrays(shape=(array.shape[-1],)))
+    by = data.draw(by_arrays(shape=st.just((array.shape[-1],))))
 
     def reverse(arr):
         return arr[..., ::-1]
@@ -227,7 +255,7 @@ def test_ffill_bfill_reverse(data, array: dask.array.Array) -> None:
     func=st.sampled_from(["first", "last", "nanfirst", "nanlast"]),
 )
 def test_first_last(data, array: dask.array.Array, func: str) -> None:
-    by = data.draw(by_arrays(shape=(array.shape[-1],)))
+    by = data.draw(by_arrays(shape=st.just((array.shape[-1],))))
 
     INVERSES = {
         "first": "last",
@@ -257,7 +285,7 @@ def test_first_last(data, array: dask.array.Array, func: str) -> None:
         assert_equal(fg, rg)
         assert_equal(forward, reverse)
 
-    if arr.dtype.kind == "f" and not np.isnan(array.compute()).any():
+    if arr.dtype.kind == "f" and not isnull(array.compute()).any():
         if mate in ["first", "last"]:
             array = array.rechunk((*array.chunks[:-1], -1))
 
@@ -269,7 +297,7 @@ def test_first_last(data, array: dask.array.Array, func: str) -> None:
 @given(data=st.data(), func=st.sampled_from(["nanfirst", "nanlast"]))
 def test_first_last_useless(data, func):
     shape = data.draw(npst.array_shapes())
-    by = data.draw(by_arrays(shape=shape[slice(-1, None)]))
+    by = data.draw(by_arrays(shape=st.just(shape[slice(-1, None)])))
     chunks = data.draw(chunks_strategy(shape=shape))
     array = np.zeros(shape, dtype=np.int8)
     if chunks is not None:
@@ -282,8 +310,8 @@ def test_first_last_useless(data, func):
 @given(
     func=st.sampled_from(["sum", "prod", "nansum", "nanprod"]),
     engine=st.sampled_from(["numpy", "flox"]),
-    array_dtype=st.none() | array_dtypes,
-    dtype=st.none() | array_dtypes,
+    array_dtype=st.none() | numeric_dtypes,
+    dtype=st.none() | numeric_dtypes,
 )
 def test_agg_dtype_specified(func, array_dtype, dtype, engine):
     # regression test for GH388

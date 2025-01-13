@@ -30,6 +30,8 @@ CAST_TO = {
     "nanmean": {np.int_: np.float64},
     "nanvar": {np.int_: np.float64},
     "nanstd": {np.int_: np.float64},
+    "nanfirst": {np.datetime64: np.int64, np.timedelta64: np.int64},
+    "nanlast": {np.datetime64: np.int64, np.timedelta64: np.int64},
 }
 
 
@@ -51,7 +53,7 @@ def _numbagg_wrapper(
     if cast_to:
         for from_, to_ in cast_to.items():
             if np.issubdtype(array.dtype, from_):
-                array = array.astype(to_)
+                array = array.astype(to_, copy=False)
 
     func_ = getattr(numbagg.grouped, f"group_{func}")
 

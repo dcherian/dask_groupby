@@ -193,6 +193,17 @@ def test_validate_expected_groups(expected_groups):
 
 
 @requires_cftime
+@pytest.mark.parametrize("func", ["first", "last", "min", "max", "count"])
+def test_xarray_reduce_cftime_var(engine, func):
+    times = xr.date_range("1980-09-01 00:00", "1982-09-18 00:00", freq="ME", calendar="noleap")
+    ds = xr.Dataset({"var": ("time", times)}, coords={"time": np.repeat(np.arange(4), 6)})
+
+    actual = xarray_reduce(ds, ds.time, func=func)
+    expected = getattr(ds.groupby("time"), func)()
+    xr.testing.assert_identical(actual, expected)
+
+
+@requires_cftime
 @requires_dask
 def test_xarray_reduce_single_grouper(engine_no_numba):
     engine = engine_no_numba

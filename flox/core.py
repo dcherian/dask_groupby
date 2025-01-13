@@ -45,6 +45,9 @@ from .aggregations import (
 )
 from .cache import memoize
 from .xrutils import (
+    _contains_cftime_datetimes,
+    _to_pytimedelta,
+    datetime_to_numeric,
     is_chunked_array,
     is_duck_array,
     is_duck_cubed_array,
@@ -169,6 +172,17 @@ def _is_first_last_reduction(func: T_Agg) -> bool:
     if isinstance(func, Aggregation):
         func = func.name
     return func in ["nanfirst", "nanlast", "first", "last"]
+
+
+def _is_bool_supported_reduction(func: T_Agg) -> bool:
+    if isinstance(func, Aggregation):
+        func = func.name
+    return (
+        func in ["all", "any"]
+        # TODO: enable in npg
+        # or _is_first_last_reduction(func)
+        # or _is_minmax_reduction(func)
+    )
 
 
 def _get_expected_groups(by: T_By, sort: bool) -> T_ExpectIndex:
@@ -2422,7 +2436,7 @@ def groupby_reduce(
         array.dtype,
     )
 
-    is_bool_array = np.issubdtype(array.dtype, bool)
+    is_bool_array = np.issubdtype(array.dtype, bool) and not _is_bool_supported_reduction(func)
     array = array.astype(np.int_) if is_bool_array else array
 
     isbins = _atleast_1d(isbin, nby)
@@ -2472,7 +2486,8 @@ def groupby_reduce(
     has_dask = is_duck_dask_array(array) or is_duck_dask_array(by_)
     has_cubed = is_duck_cubed_array(array) or is_duck_cubed_array(by_)
 
-    if _is_first_last_reduction(func):
+    is_first_last = _is_first_last_reduction(func)
+    if is_first_last:
         if has_dask and nax != 1:
             raise ValueError(
                 "For dask arrays: first, last, nanfirst, nanlast reductions are "
@@ -2484,6 +2499,22 @@ def groupby_reduce(
                 "first, last, nanfirst, nanlast reductions are only supported "
                 "along a single axis or when reducing across all dimensions of `by`."
             )
+
+    is_npdatetime = array.dtype.kind in "Mm"
+    is_cftime = _contains_cftime_datetimes(array)
+    requires_numeric = (
+        (func not in ["count", "any", "all"] and not is_first_last)
+        # Flox's count works with non-numeric and its faster than converting.
+        or (func == "count" and engine != "flox")
+        or (is_first_last and is_cftime)
+    )
+    if requires_numeric:
+        if is_npdatetime:
+            datetime_dtype = array.dtype
+            array = array.view(np.int64)
+        elif is_cftime:
+            offset = array.min()
+            array = datetime_to_numeric(array, offset, datetime_unit="us")
 
     if nax == 1 and by_.ndim > 1 and expected_ is None:
         # When we reduce along all axes, we are guaranteed to see all
@@ -2670,6 +2701,14 @@ def groupby_reduce(
 
     if is_bool_array and (_is_minmax_reduction(func) or _is_first_last_reduction(func)):
         result = result.astype(bool)
+
+    # Output of count has an int dtype.
+    if requires_numeric and func != "count":
+        if is_npdatetime:
+            result = result.astype(datetime_dtype)
+        elif is_cftime:
+            result = _to_pytimedelta(result, unit="us") + offset
+
     return (result, *groups)
 
 
@@ -2810,6 +2849,12 @@ def groupby_scan(
     (by_,) = bys
     has_dask = is_duck_dask_array(array) or is_duck_dask_array(by_)
 
+    if array.dtype.kind in "Mm":
+        cast_to = array.dtype
+        array = array.view(np.int64)
+    else:
+        cast_to = None
+
     # TODO: move to aggregate_npg.py
     if agg.name in ["cumsum", "nancumsum"] and array.dtype.kind in ["i", "u"]:
         # https://numpy.org/doc/stable/reference/generated/numpy.cumsum.html
@@ -2825,7 +2870,10 @@ def groupby_scan(
     (single_axis,) = axis_  # type: ignore[misc]
     # avoid some roundoff error when we can.
     if by_.shape[-1] == 1 or by_.shape == grp_shape:
-        return array.astype(agg.dtype)
+        array = array.astype(agg.dtype)
+        if cast_to is not None:
+            array = array.astype(cast_to)
+        return array
 
     # Made a design choice here to have `preprocess` handle both array and group_idx
     # Example: for reversing, we need to reverse the whole array, not just reverse
@@ -2844,6 +2892,9 @@ def groupby_scan(
     out = AlignedArrays(array=result, group_idx=by_)
     if agg.finalize:
         out = agg.finalize(out)
+
+    if cast_to is not None:
+        return out.array.astype(cast_to)
     return out.array
 
 
