@@ -9,19 +9,16 @@ the `func` kwarg:
 - `"mean"`, `"nanmean"`
 - `"var"`, `"nanvar"`
 - `"std"`, `"nanstd"`
-- `"argmin"`
-- `"argmax"`
+- `"argmin"`, `"nanargmax"`
+- `"argmax"`, `"nanargmin"`
 - `"first"`, `"nanfirst"`
 - `"last"`, `"nanlast"`
 - `"median"`, `"nanmedian"`
 - `"mode"`, `"nanmode"`
 - `"quantile"`, `"nanquantile"`
+- `"topk"`
 
-```{tip}
-We would like to add support for `cumsum`, `cumprod` ([issue](https://github.com/xarray-contrib/flox/issues/91)). Contributions are welcome!
-```
-
-## Custom Aggregations
+## Custom Reductions
 
 `flox` also allows you to specify a custom Aggregation (again inspired by dask.dataframe),
 though this might not be fully functional at the moment. See `aggregations.py` for examples.
@@ -46,3 +43,7 @@ mean = Aggregation(
     final_fill_value=np.nan,
 )
 ```
+
+## Custom Scans
+
+Coming soon!

@@ -42,6 +42,7 @@ from .aggregations import (
     _initialize_aggregation,
     generic_aggregate,
     quantile_new_dims_func,
+    topk_new_dims_func,
 )
 from .cache import memoize
 from .lib import ArrayLayer
@@ -176,7 +177,7 @@ def _is_bool_supported_reduction(func: T_Agg) -> bool:
     if isinstance(func, Aggregation):
         func = func.name
     return (
-        func in ["all", "any"]
+        func in ["all", "any", "topk"]
         # TODO: enable in npg
         # or _is_first_last_reduction(func)
         # or _is_minmax_reduction(func)
@@ -982,7 +983,7 @@ def chunk_reduce(
     nfuncs = len(funcs)
     dtypes = _atleast_1d(dtype, nfuncs)
     fill_values = _atleast_1d(fill_value, nfuncs)
-    kwargss = _atleast_1d({}, nfuncs) if kwargs is None else kwargs
+    kwargss = _atleast_1d({} if kwargs is None else kwargs, nfuncs)
 
     if isinstance(axis, Sequence):
         axes: T_Axes = axis
@@ -1070,8 +1071,16 @@ def chunk_reduce(
     # optimize that out.
     previous_reduction: T_Func = ""
     for reduction, fv, kw, dt in zip(funcs, fill_values, kwargss, dtypes):
+        # TODO: Figure out how to generalize this
+        if reduction in ("quantile", "nanquantile"):
+            new_dims_shape = tuple(dim.size for dim in quantile_new_dims_func(**kw) if not dim.is_scalar)
+        elif reduction == "topk":
+            new_dims_shape = tuple(dim.size for dim in topk_new_dims_func(**kw) if not dim.is_scalar)
+        else:
+            new_dims_shape = tuple()
+
         if empty:
-            result = np.full(shape=final_array_shape, fill_value=fv)
+            result = np.full(shape=new_dims_shape + final_array_shape, fill_value=fv)
         elif is_nanlen(reduction) and is_nanlen(previous_reduction):
             result = results["intermediates"][-1]
         else:
@@ -1100,11 +1109,6 @@ def chunk_reduce(
             if hasnan:
                 # remove NaN group label which should be last
                 result = result[..., :-1]
-            # TODO: Figure out how to generalize this
-            if reduction in ("quantile", "nanquantile"):
-                new_dims_shape = tuple(dim.size for dim in quantile_new_dims_func(**kw) if not dim.is_scalar)
-            else:
-                new_dims_shape = tuple()
             result = result.reshape(new_dims_shape + final_array_shape[:-1] + found_groups_shape)
         results["intermediates"].append(result)
         previous_reduction = reduction
@@ -1159,6 +1163,7 @@ def _finalize_results(
         if count_mask.any():
             # For one count_mask.any() prevents promoting bool to dtype(fill_value) unless
             # necessary
+            fill_value = fill_value or agg.fill_value[agg.name]
             if fill_value is None:
                 raise ValueError("Filling is required but fill_value is None.")
             # This allows us to match xarray's type promotion rules
@@ -1657,6 +1662,9 @@ def dask_groupby_agg(
         #  use the "non dask" code path, but applied blockwise
         blockwise_method = partial(_reduce_blockwise, agg=agg, fill_value=fill_value, reindex=reindex)
     else:
+        extra = {}
+        if agg.name == "topk":
+            extra["kwargs"] = (agg.finalize_kwargs, *(({},) * (len(agg.chunk) - 1)))
         # choose `chunk_reduce` or `chunk_argreduce`
         blockwise_method = partial(
             _get_chunk_reduction(agg.reduction_type),
@@ -1665,6 +1673,7 @@ def dask_groupby_agg(
             dtype=agg.dtype["intermediate"],
             reindex=reindex,
             user_dtype=agg.dtype["user"],
+            **extra,
         )
         if do_simple_combine:
             # Add a dummy dimension that then gets reduced over
@@ -2244,7 +2253,7 @@ def _choose_engine(by, agg: Aggregation):
 
     not_arg_reduce = not _is_arg_reduction(agg)
 
-    if agg.name in ["quantile", "nanquantile", "median", "nanmedian"]:
+    if agg.name in ["quantile", "nanquantile", "median", "nanmedian", "topk"]:
         logger.debug(f"_choose_engine: Choosing 'flox' since {agg.name}")
         return "flox"
 
@@ -2295,7 +2304,7 @@ def groupby_reduce(
         equality check are for dimensions of size 1 in `by`.
     func : {"all", "any", "count", "sum", "nansum", "mean", "nanmean", \
             "max", "nanmax", "min", "nanmin", "argmax", "nanargmax", "argmin", "nanargmin", \
-            "quantile", "nanquantile", "median", "nanmedian", "mode", "nanmode", \
+            "quantile", "nanquantile", "median", "nanmedian", "topk", "mode", "nanmode", \
             "first", "nanfirst", "last", "nanlast"} or Aggregation
         Single function name or an Aggregation instance
     expected_groups : (optional) Sequence
@@ -2367,6 +2376,11 @@ def groupby_reduce(
     finalize_kwargs : dict, optional
         Kwargs passed to finalize the reduction such as ``ddof`` for var, std or ``q`` for quantile.
 
+    Notes
+    -----
+    ``topk`` and ``quantile`` are implemented by converting to a complex number and so are limited to values between +-``2**53-1``
+    i.e. the limit of a ``float64`` dtype. Offset your data appropriately if you need the larger range.
+
     Returns
     -------
     result
@@ -2403,6 +2417,8 @@ def groupby_reduce(
                     "Use engine='flox' instead (it is also much faster), "
                     "or set engine=None to use the default."
                 )
+    if func == "topk" and (finalize_kwargs is None or "k" not in finalize_kwargs):
+        raise ValueError("Please pass `k` in ``finalize_kwargs`` for topk calculations.")
 
     bys: T_Bys = tuple(np.asarray(b) if not is_duck_array(b) else b for b in by)
     nby = len(bys)

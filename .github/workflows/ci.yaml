@@ -74,7 +74,7 @@ jobs:
         id: status
         run: |
           python -c "import xarray; xarray.show_versions()"
-          pytest --durations=20 --durations-min=0.5 -n auto --cov=./ --cov-report=xml --hypothesis-profile ci
+          pytest --durations=20 --durations-min=0.5 -n auto --cov=./ --cov-report=xml --hypothesis-profile ci --log-disable=flox
       - name: Upload code coverage to Codecov
         uses: codecov/codecov-action@v5.3.1
         with:

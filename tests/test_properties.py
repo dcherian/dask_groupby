@@ -327,3 +327,28 @@ def test_agg_dtype_specified(func, array_dtype, dtype, engine):
     )
     expected = getattr(np, func)(counts, keepdims=True, dtype=dtype)
     assert actual.dtype == expected.dtype
+
+
+@given(data=st.data(), array=chunked_arrays())
+def test_topk_max_min(data, array):
+    "top 1 == nanmax; top -1 == nanmin"
+
+    if array.dtype.kind in "iu":
+        # we cast to float and back, so this is the effective limit
+        assume((np.abs(array) < 2**53).all())
+    elif array.dtype.kind in "Mm":
+        assume((np.abs(array.view(np.int64)) < 2**53).all())
+        # we cast to float and back, so this is the effective limit
+    elif _contains_cftime_datetimes(array):
+        asint = datetime_to_numeric(array, datetime_unit="us")
+        assume((np.abs(asint.view(np.int64)) < 2**53).all())
+
+    size = array.shape[-1]
+    by = data.draw(by_arrays(shape=(size,)))
+    k, npfunc = data.draw(st.sampled_from([(1, "nanmax"), (-1, "nanmin")]))
+
+    for a in (array, array.compute()):
+        actual, _ = groupby_reduce(a, by, func="topk", finalize_kwargs={"k": k})
+        # TODO: do numbagg, flox
+        expected, _ = groupby_reduce(a, by, func=npfunc, engine="numpy")
+        assert_equal(actual, expected[np.newaxis, :])

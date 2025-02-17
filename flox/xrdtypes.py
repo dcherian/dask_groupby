@@ -109,6 +109,9 @@ def get_pos_infinity(dtype, max_for_int=False):
     if issubclass(dtype.type, np.complexfloating):
         return np.inf + 1j * np.inf
 
+    if issubclass(dtype.type, np.bool_):
+        return True
+
     return INF
 
 
@@ -141,6 +144,9 @@ def get_neg_infinity(dtype, min_for_int=False):
 
     if issubclass(dtype.type, np.complexfloating):
         return -np.inf - 1j * np.inf
+
+    if issubclass(dtype.type, np.bool_):
+        return False
 
     return NINF
 
