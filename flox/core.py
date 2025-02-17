@@ -730,6 +730,31 @@ def offset_labels(labels: np.ndarray, ngroups: int) -> tuple[np.ndarray, int]:
     return offset, size
 
 
+def fast_isin(ar1, ar2, invert):
+    """
+    Faster version of numpy isin.
+    1. Use pd.factorize instead of np.unique
+    2. Skip a bunch of checks
+    """
+    rev_idx, ar1 = pd.factorize(ar1, sort=False)
+
+    ar = np.concatenate((ar1, ar2))
+    # We need this to be a stable sort, so always use 'mergesort'
+    # here. The values from the first array should always come before
+    # the values from the second array.
+    order = ar.argsort(kind="mergesort")
+    sar = ar[order]
+    if invert:
+        bool_ar = sar[1:] != sar[:-1]
+    else:
+        bool_ar = sar[1:] == sar[:-1]
+    flag = np.concatenate((bool_ar, [invert]))
+    ret = np.empty(ar.shape, dtype=bool)
+    ret[order] = flag
+
+    return ret[rev_idx]
+
+
 @overload
 def factorize_(
     by: T_Bys,
@@ -825,12 +850,23 @@ def factorize_(
             if expect is not None and reindex:
                 sorter = np.argsort(expect)
                 groups = expect[(sorter,)] if sort else expect
+
                 idx = np.searchsorted(expect, flat, sorter=sorter)
-                mask = ~np.isin(flat, expect) | isnull(flat) | (idx == len(expect))
+                mask = fast_isin(flat, expect, invert=True)
+                if not np.issubdtype(flat.dtype, np.integer):
+                    mask |= isnull(flat)
+                outside_last_elem_mask = idx == len(expect)
+                mask |= outside_last_elem_mask
+
+                # idx = np.full(flat.shape, -1)
+                # result = np.searchsorted(expect.values, flat[~mask], sorter=sorter)
+                # idx[~mask] = result
+                # idx = np.searchsorted(expect.values, flat, sorter=sorter)
+                # idx[mask] = -1
                 if not sort:
                     # idx is the index in to the sorted array.
                     # if we didn't want sorting, unsort it back
-                    idx[(idx == len(expect),)] = -1
+                    idx[(outside_last_elem_mask)] = -1
                     idx = sorter[(idx,)]
                 idx[mask] = -1
             else:
