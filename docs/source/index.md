@@ -1,4 +1,4 @@
-# flox: fast & furious GroupBy reductions for `dask.array`
+# flox: fast & furious GroupBy reductions for dask, cubed, & Xarray!
 
 [![GitHub Workflow CI Status](https://img.shields.io/github/actions/workflow/status/xarray-contrib/flox/ci.yaml?branch=main&logo=github&style=flat)](https://github.com/xarray-contrib/flox/actions)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/xarray-contrib/flox/main.svg)](https://results.pre-commit.ci/latest/github/xarray-contrib/flox/main)
@@ -13,8 +13,8 @@
 
 ## Overview
 
-`flox` mainly provides strategies for fast GroupBy reductions with dask.array. `flox` uses the MapReduce paradigm (or a "tree reduction")
-to run the GroupBy operation in a parallel-native way totally avoiding a sort or shuffle operation. It was motivated by
+`flox` mainly provides strategies for fast GroupBy reductions and scans with chunked arrays like [dask](<>) and [cubed](<>).
+For reductions, `flox` uses a "tree reduction" to run the GroupBy operation in a parallel-native way totally avoiding a sort or shuffle operation. It was motivated by
 
 1. Dask Dataframe GroupBy
    [blogpost](https://blog.dask.org/2019/10/08/df-groupby)
