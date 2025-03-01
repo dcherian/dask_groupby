@@ -76,7 +76,7 @@ jobs:
           python -c "import xarray; xarray.show_versions()"
           pytest --durations=20 --durations-min=0.5 -n auto --cov=./ --cov-report=xml --hypothesis-profile ci
       - name: Upload code coverage to Codecov
-        uses: codecov/codecov-action@v5.3.1
+        uses: codecov/codecov-action@v5.4.0
         with:
           file: ./coverage.xml
           flags: unittests
